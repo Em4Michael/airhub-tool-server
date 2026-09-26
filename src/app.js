@@ -13,7 +13,18 @@ const paymentRoutes = require('./routes/payment.routes');
 const adminRoutes = require('./routes/admin.routes');
 const errorHandler = require('./middleware/errorHandler');
 
+
+const cors = require("cors");
+
 const app = express();
+
+app.use(cors({
+  origin: [
+    "http://localhost:3000",
+    "https://your-app.vercel.app",
+  ],
+  credentials: true,
+}));
 
 // Security & Performance
 app.use(helmet());
