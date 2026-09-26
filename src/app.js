@@ -16,22 +16,25 @@ const errorHandler = require('./middleware/errorHandler');
 
 const app = express();
 
-app.use(cors({
-  origin: [
-    "http://localhost:3000",
-    "https://airhub-tool.vercel.app",
-  ],
+// CORS — must come before other middleware
+const allowedOrigins = [
+  "http://localhost:3000",
+  "https://airhub-tool.vercel.app",
+];
+
+const corsOptions = {
+  origin: allowedOrigins,
   credentials: true,
-}));
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions)); // handle preflight for all routes
 
 // Security & Performance
 app.use(helmet());
 app.use(compression());
-app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-}));
 
 // Rate limiting
 const limiter = rateLimit({
