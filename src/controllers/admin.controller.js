@@ -181,21 +181,19 @@ exports.getAllRatings = async (req, res, next) => {
   }
 };
 
-
 // ─── GET /api/admin/usage — full usage analytics for all users ────────────────
 exports.getUsageAnalytics = async (req, res, next) => {
   try {
     const { days = 30 } = req.query;
     const since = new Date(Date.now() - parseInt(days) * 24 * 60 * 60 * 1000);
 
+    // ── 1. Rating counts per user ─────────────────────────────────────────
     const perUser = await Rating.aggregate([
       { $match: { createdAt: { $gte: since }, status: 'completed' } },
       {
         $group: {
           _id: '$user',
           totalRatings: { $sum: 1 },
-          totalTimeSec: { $sum: '$timeTaken' },
-          avgTimeSec: { $avg: '$timeTaken' },
           byType: { $push: '$taskType' },
           lastActive: { $max: '$createdAt' },
           firstActive: { $min: '$createdAt' },
@@ -212,42 +210,91 @@ exports.getUsageAnalytics = async (req, res, next) => {
       {
         $project: {
           totalRatings: 1,
-          totalTimeSec: 1,
-          avgTimeSec: 1,
           byType: 1,
           lastActive: 1,
           firstActive: 1,
           name: { $arrayElemAt: ['$userInfo.name', 0] },
           email: { $arrayElemAt: ['$userInfo.email', 0] },
           hourlyRate: { $arrayElemAt: ['$userInfo.hourlyRate', 0] },
-          isActive: { $arrayElemAt: ['$userInfo.isActive', 0] },
         },
       },
       { $sort: { totalRatings: -1 } },
     ]);
 
-    const usersWithBreakdown = perUser.map(u => {
-  const typeCounts = {};
-  (u.byType || []).forEach(t => { typeCounts[t] = (typeCounts[t] || 0) + 1; });
-  const activeDays = u.firstActive && u.lastActive
-    ? Math.max(1, Math.ceil((new Date(u.lastActive) - new Date(u.firstActive)) / (1000 * 60 * 60 * 24)) + 1)
-    : 1;
-  return {
-    userId: u._id,
-    name: u.name || 'Unknown',
-    email: u.email || '',
-    totalRatings: u.totalRatings,
-    totalTimeSec: u.totalTimeSec || 0,
-    totalTimeHrs: parseFloat(((u.totalTimeSec || 0) / 3600).toFixed(2)),
-    avgTimeSec: Math.round(u.avgTimeSec || 0),
-    ratingsPerDay: parseFloat((u.totalRatings / activeDays).toFixed(1)),
-    lastActive: u.lastActive,
-    taskBreakdown: typeCounts,
-    hourlyRate: u.hourlyRate || 0,
-    estimatedEarnings: parseFloat((((u.totalTimeSec || 0) / 3600) * (u.hourlyRate || 0)).toFixed(2)),
-  };
-});
+    // ── 2. Hours from submitted timesheets in the period ─────────────────
+    // Timesheets are submitted weekly — sum hoursWorked for timesheets
+    // whose periodStart falls within the requested window.
+    // We use any status except 'rejected' so pending/approved/paid all count.
+    const timesheetHours = await Timesheet.aggregate([
+      {
+        $match: {
+          periodStart: { $gte: since },
+          status: { $in: ['pending', 'approved', 'paid'] },
+        },
+      },
+      {
+        $group: {
+          _id: '$user',
+          totalHours: { $sum: '$hoursWorked' },
+          timesheetCount: { $sum: 1 },
+          // Collect weekly submissions so we can show breakdown
+          weeks: {
+            $push: {
+              periodStart: '$periodStart',
+              periodEnd: '$periodEnd',
+              hours: '$hoursWorked',
+              status: '$status',
+            },
+          },
+        },
+      },
+    ]);
 
+    // Build a lookup map: userId -> { totalHours, weeks }
+    const hoursMap = {};
+    timesheetHours.forEach(t => {
+      hoursMap[t._id.toString()] = {
+        totalHours: t.totalHours,
+        timesheetCount: t.timesheetCount,
+        weeks: t.weeks.sort((a, b) => new Date(a.periodStart) - new Date(b.periodStart)),
+      };
+    });
+
+    // ── 3. Combine rating counts + timesheet hours per user ───────────────
+    const usersWithBreakdown = perUser.map(u => {
+      const typeCounts = {};
+      (u.byType || []).forEach(t => { typeCounts[t] = (typeCounts[t] || 0) + 1; });
+
+      const activeDays = u.firstActive && u.lastActive
+        ? Math.max(1, Math.ceil((new Date(u.lastActive) - new Date(u.firstActive)) / (1000 * 60 * 60 * 24)) + 1)
+        : 1;
+
+      const uid = u._id.toString();
+      const tsData = hoursMap[uid] || null;
+      const totalHours = tsData ? tsData.totalHours : null;
+      const estimatedEarnings = (totalHours !== null && u.hourlyRate)
+        ? parseFloat((totalHours * u.hourlyRate).toFixed(2))
+        : null;
+
+      return {
+        userId: u._id,
+        name: u.name || 'Unknown',
+        email: u.email || '',
+        totalRatings: u.totalRatings,
+        // Hours come from submitted timesheets only — never assumed
+        totalHours,
+        timesheetCount: tsData ? tsData.timesheetCount : 0,
+        weeklyBreakdown: tsData ? tsData.weeks : [],
+        hasTimeData: totalHours !== null && totalHours > 0,
+        ratingsPerDay: parseFloat((u.totalRatings / activeDays).toFixed(1)),
+        lastActive: u.lastActive,
+        taskBreakdown: typeCounts,
+        hourlyRate: u.hourlyRate || 0,
+        estimatedEarnings,
+      };
+    });
+
+    // ── 4. Daily rating trend ─────────────────────────────────────────────
     const dailyTrend = await Rating.aggregate([
       { $match: { createdAt: { $gte: since }, status: 'completed' } },
       {
@@ -257,7 +304,6 @@ exports.getUsageAnalytics = async (req, res, next) => {
             user: '$user',
           },
           count: { $sum: 1 },
-          timeSec: { $sum: '$timeTaken' },
         },
       },
       {
@@ -265,33 +311,27 @@ exports.getUsageAnalytics = async (req, res, next) => {
           _id: '$_id.date',
           totalRatings: { $sum: '$count' },
           uniqueUsers: { $sum: 1 },
-          totalTimeSec: { $sum: '$timeSec' },
         },
       },
       { $sort: { _id: 1 } },
     ]);
 
-    const userDailyTrend = await Rating.aggregate([
-      { $match: { createdAt: { $gte: since }, status: 'completed' } },
+    // ── 5. Weekly hours trend (from timesheets) ───────────────────────────
+    const weeklyHoursTrend = await Timesheet.aggregate([
       {
-        $lookup: {
-          from: 'users',
-          localField: 'user',
-          foreignField: '_id',
-          as: 'userInfo',
+        $match: {
+          periodStart: { $gte: since },
+          status: { $in: ['pending', 'approved', 'paid'] },
         },
       },
       {
         $group: {
-          _id: {
-            date: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
-            userId: '$user',
-            userName: { $arrayElemAt: ['$userInfo.name', 0] },
-          },
-          count: { $sum: 1 },
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$periodStart' } },
+          totalHours: { $sum: '$hoursWorked' },
+          usersCount: { $sum: 1 },
         },
       },
-      { $sort: { '_id.date': 1 } },
+      { $sort: { _id: 1 } },
     ]);
 
     const globalTypeBreakdown = await Rating.aggregate([
@@ -302,18 +342,19 @@ exports.getUsageAnalytics = async (req, res, next) => {
 
     const hourlyDist = await Rating.aggregate([
       { $match: { createdAt: { $gte: since }, status: 'completed' } },
-      {
-        $group: {
-          _id: { $hour: '$createdAt' },
-          count: { $sum: 1 },
-        },
-      },
+      { $group: { _id: { $hour: '$createdAt' }, count: { $sum: 1 } } },
       { $sort: { _id: 1 } },
     ]);
 
     const topByRatings = [...usersWithBreakdown].sort((a, b) => b.totalRatings - a.totalRatings).slice(0, 5);
-    const topByTime = [...usersWithBreakdown].sort((a, b) => b.totalTimeHrs - a.totalTimeHrs).slice(0, 5);
+    const topByHours = [...usersWithBreakdown].filter(u => u.hasTimeData).sort((a, b) => b.totalHours - a.totalHours).slice(0, 5);
     const topByRate = [...usersWithBreakdown].sort((a, b) => b.ratingsPerDay - a.ratingsPerDay).slice(0, 5);
+
+    // Totals
+    const usersWithTime = usersWithBreakdown.filter(u => u.hasTimeData);
+    const totalHoursAll = usersWithTime.length > 0
+      ? parseFloat(usersWithTime.reduce((s, u) => s + u.totalHours, 0).toFixed(2))
+      : null;
 
     res.json({
       success: true,
@@ -321,13 +362,14 @@ exports.getUsageAnalytics = async (req, res, next) => {
         period: { days: parseInt(days), since },
         users: usersWithBreakdown,
         dailyTrend,
-        userDailyTrend,
+        weeklyHoursTrend,
         globalTypeBreakdown,
         hourlyDist,
-        topPerformers: { byRatings: topByRatings, byTime: topByTime, byRate: topByRate },
+        topPerformers: { byRatings: topByRatings, byHours: topByHours, byRate: topByRate },
         totals: {
           totalRatings: usersWithBreakdown.reduce((s, u) => s + u.totalRatings, 0),
-          totalTimeHrs: parseFloat(usersWithBreakdown.reduce((s, u) => s + u.totalTimeHrs, 0).toFixed(2)),
+          totalHours: totalHoursAll,
+          hasTimeData: totalHoursAll !== null,
           activeUsers: usersWithBreakdown.length,
           avgRatingsPerUser: usersWithBreakdown.length
             ? parseFloat((usersWithBreakdown.reduce((s, u) => s + u.totalRatings, 0) / usersWithBreakdown.length).toFixed(1))
@@ -353,35 +395,48 @@ exports.getUserUsageDetail = async (req, res, next) => {
     const mongoose = require('mongoose');
     const uid = new mongoose.Types.ObjectId(userId);
 
+    // Daily rating counts
     const daily = await Rating.aggregate([
       { $match: { user: uid, createdAt: { $gte: since }, status: 'completed' } },
       {
         $group: {
           _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
           count: { $sum: 1 },
-          timeSec: { $sum: '$timeTaken' },
           types: { $push: '$taskType' },
         },
       },
       { $sort: { _id: 1 } },
     ]);
 
+    // Hourly pattern
     const hourly = await Rating.aggregate([
       { $match: { user: uid, createdAt: { $gte: since }, status: 'completed' } },
       { $group: { _id: { $hour: '$createdAt' }, count: { $sum: 1 } } },
       { $sort: { _id: 1 } },
     ]);
 
+    // Task type breakdown
     const typeBreakdown = await Rating.aggregate([
       { $match: { user: uid, createdAt: { $gte: since }, status: 'completed' } },
-      { $group: { _id: '$taskType', count: { $sum: 1 }, totalTime: { $sum: '$timeTaken' } } },
+      { $group: { _id: '$taskType', count: { $sum: 1 } } },
       { $sort: { count: -1 } },
     ]);
 
+    // Timesheets — each weekly submission with hours
+    const timesheets = await Timesheet.find({
+      user: uid,
+      periodStart: { $gte: since },
+      status: { $in: ['pending', 'approved', 'paid'] },
+    }).sort({ periodStart: 1 }).select('periodStart periodEnd hoursWorked status grossAmount ratingsCompleted');
+
+    const totalHours = timesheets.reduce((s, t) => s + (t.hoursWorked || 0), 0);
+    const hasTimeData = totalHours > 0;
+
+    // Recent ratings
     const recent = await Rating.find({ user: uid, status: 'completed' })
       .sort({ createdAt: -1 })
       .limit(20)
-      .select('taskType inputUrl query timeTaken createdAt evaluation.finalRating evaluation.needsMetRating');
+      .select('taskType inputUrl query createdAt evaluation.finalRating evaluation.needsMetRating');
 
     res.json({
       success: true,
@@ -390,6 +445,9 @@ exports.getUserUsageDetail = async (req, res, next) => {
         daily,
         hourly,
         typeBreakdown,
+        timesheets,
+        totalHours: hasTimeData ? totalHours : null,
+        hasTimeData,
         recent,
       },
     });
