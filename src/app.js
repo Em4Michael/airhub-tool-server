@@ -21,7 +21,7 @@ const app = express();
 app.use(cors({
   origin: [
     "http://localhost:3000",
-    "https://your-app.vercel.app",
+    "https://airhub-tool.vercel.app",
   ],
   credentials: true,
 }));
