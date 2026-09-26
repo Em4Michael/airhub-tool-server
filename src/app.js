@@ -14,8 +14,6 @@ const adminRoutes = require('./routes/admin.routes');
 const errorHandler = require('./middleware/errorHandler');
 
 
-const cors = require("cors");
-
 const app = express();
 
 app.use(cors({
