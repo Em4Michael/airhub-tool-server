@@ -455,3 +455,235 @@ exports.getUserUsageDetail = async (req, res, next) => {
     next(err);
   }
 };
+
+// GET /api/admin/dashboard — rich dashboard with period breakdown
+exports.getDashboardAnalytics = async (req, res, next) => {
+  try {
+    const now = new Date();
+
+    // Period boundaries
+    const periods = {
+      week:     new Date(now - 7  * 86400000),
+      biweekly: new Date(now - 14 * 86400000),
+      month:    new Date(now - 30 * 86400000),
+      allTime:  new Date(0),
+    };
+
+    // Core counts
+    const [totalUsers, pendingApproval, totalRatings, pendingTimesheets, pendingPayments] = await Promise.all([
+      User.countDocuments({ role: 'rater' }),
+      User.countDocuments({ isApproved: false, role: 'rater' }),
+      Rating.countDocuments({ status: 'completed' }),
+      Timesheet.countDocuments({ status: 'pending' }),
+      Payment.countDocuments({ status: 'pending' }),
+    ]);
+
+    // Earnings + hours per period from timesheets
+    const earningsAndHours = async (since) => {
+      const rows = await Timesheet.aggregate([
+        { $match: { periodStart: { $gte: since }, status: { $in: ['approved', 'paid'] } } },
+        { $group: { _id: null, totalEarnings: { $sum: '$grossAmount' }, totalHours: { $sum: '$hoursWorked' } } },
+      ]);
+      return rows[0] || { totalEarnings: 0, totalHours: 0 };
+    };
+
+    // Ratings per period
+    const ratingCount = async (since) =>
+      Rating.countDocuments({ createdAt: { $gte: since }, status: 'completed' });
+
+    // Active users per period (submitted at least one rating)
+    const activeUsers = async (since) => {
+      const rows = await Rating.aggregate([
+        { $match: { createdAt: { $gte: since }, status: 'completed' } },
+        { $group: { _id: '$user' } },
+        { $count: 'count' },
+      ]);
+      return rows[0]?.count || 0;
+    };
+
+    const [
+      w_eh, bw_eh, m_eh, at_eh,
+      w_r, bw_r, m_r, at_r,
+      w_u, bw_u, m_u, at_u,
+    ] = await Promise.all([
+      earningsAndHours(periods.week),
+      earningsAndHours(periods.biweekly),
+      earningsAndHours(periods.month),
+      earningsAndHours(periods.allTime),
+      ratingCount(periods.week),
+      ratingCount(periods.biweekly),
+      ratingCount(periods.month),
+      ratingCount(periods.allTime),
+      activeUsers(periods.week),
+      activeUsers(periods.biweekly),
+      activeUsers(periods.month),
+      activeUsers(periods.allTime),
+    ]);
+
+    const byPeriod = {
+      week:     { earnings: w_eh.totalEarnings,  hours: w_eh.totalHours,  ratings: w_r,  activeUsers: w_u  },
+      biweekly: { earnings: bw_eh.totalEarnings, hours: bw_eh.totalHours, ratings: bw_r, activeUsers: bw_u },
+      month:    { earnings: m_eh.totalEarnings,  hours: m_eh.totalHours,  ratings: m_r,  activeUsers: m_u  },
+      allTime:  { earnings: at_eh.totalEarnings, hours: at_eh.totalHours, ratings: at_r, activeUsers: at_u },
+    };
+
+    // Daily ratings trend last 30 days
+    const dailyTrend = await Rating.aggregate([
+      { $match: { createdAt: { $gte: periods.month }, status: 'completed' } },
+      { $group: {
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+          count: { $sum: 1 },
+          users: { $addToSet: '$user' },
+      }},
+      { $project: { _id: 1, count: 1, uniqueUsers: { $size: '$users' } } },
+      { $sort: { _id: 1 } },
+    ]);
+
+    // Weekly earnings trend last 3 months
+    const earningsTrend = await Timesheet.aggregate([
+      { $match: { periodStart: { $gte: new Date(now - 90 * 86400000) }, status: { $in: ['approved', 'paid'] } } },
+      { $group: {
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$periodStart' } },
+          earnings: { $sum: '$grossAmount' },
+          hours: { $sum: '$hoursWorked' },
+          users: { $sum: 1 },
+      }},
+      { $sort: { _id: 1 } },
+    ]);
+
+    // Task type breakdown all time
+    const taskBreakdown = await Rating.aggregate([
+      { $match: { status: 'completed' } },
+      { $group: { _id: '$taskType', count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+    ]);
+
+    // Top earners all time
+    const topEarners = await Timesheet.aggregate([
+      { $match: { status: { $in: ['approved', 'paid'] } } },
+      { $group: { _id: '$user', totalEarnings: { $sum: '$grossAmount' }, totalHours: { $sum: '$hoursWorked' } } },
+      { $sort: { totalEarnings: -1 } },
+      { $limit: 5 },
+      { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'u' } },
+      { $project: { totalEarnings: 1, totalHours: 1, name: { $arrayElemAt: ['$u.name', 0] }, email: { $arrayElemAt: ['$u.email', 0] } } },
+    ]);
+
+    // Most active raters (by rating count, all time)
+    const topRaters = await Rating.aggregate([
+      { $match: { status: 'completed' } },
+      { $group: { _id: '$user', count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 5 },
+      { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'u' } },
+      { $project: { count: 1, name: { $arrayElemAt: ['$u.name', 0] }, email: { $arrayElemAt: ['$u.email', 0] } } },
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        totals: { totalUsers, pendingApproval, totalRatings, pendingTimesheets, pendingPayments },
+        byPeriod,
+        dailyTrend,
+        earningsTrend,
+        taskBreakdown,
+        topEarners,
+        topRaters,
+      },
+    });
+  } catch (err) { next(err); }
+};
+
+// GET /api/admin/users/:id/stats — individual user stats with period breakdown
+exports.getUserStats = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    const mongoose = require('mongoose');
+    const uid = new mongoose.Types.ObjectId(req.params.id);
+    const now = new Date();
+
+    const periods = {
+      week:     new Date(now - 7  * 86400000),
+      biweekly: new Date(now - 14 * 86400000),
+      month:    new Date(now - 30 * 86400000),
+      allTime:  new Date(0),
+    };
+
+    // Ratings per period
+    const ratingsPer = async (since) =>
+      Rating.countDocuments({ user: uid, createdAt: { $gte: since }, status: 'completed' });
+
+    // Timesheet hours + earnings per period
+    const tsPer = async (since) => {
+      const rows = await Timesheet.aggregate([
+        { $match: { user: uid, periodStart: { $gte: since }, status: { $in: ['pending','approved','paid'] } } },
+        { $group: { _id: null, hours: { $sum: '$hoursWorked' }, earnings: { $sum: '$grossAmount' }, count: { $sum: 1 } } },
+      ]);
+      return rows[0] || { hours: 0, earnings: 0, count: 0 };
+    };
+
+    const [w_r, bw_r, m_r, at_r, w_t, bw_t, m_t, at_t] = await Promise.all([
+      ratingsPer(periods.week), ratingsPer(periods.biweekly),
+      ratingsPer(periods.month), ratingsPer(periods.allTime),
+      tsPer(periods.week), tsPer(periods.biweekly),
+      tsPer(periods.month), tsPer(periods.allTime),
+    ]);
+
+    const byPeriod = {
+      week:     { ratings: w_r,  hours: w_t.hours,  earnings: w_t.earnings,  timesheets: w_t.count  },
+      biweekly: { ratings: bw_r, hours: bw_t.hours, earnings: bw_t.earnings, timesheets: bw_t.count },
+      month:    { ratings: m_r,  hours: m_t.hours,  earnings: m_t.earnings,  timesheets: m_t.count  },
+      allTime:  { ratings: at_r, hours: at_t.hours, earnings: at_t.earnings, timesheets: at_t.count },
+    };
+
+    // Daily rating activity last 30 days
+    const dailyActivity = await Rating.aggregate([
+      { $match: { user: uid, createdAt: { $gte: periods.month }, status: 'completed' } },
+      { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, count: { $sum: 1 } } },
+      { $sort: { _id: 1 } },
+    ]);
+
+    // Task breakdown all time
+    const taskBreakdown = await Rating.aggregate([
+      { $match: { user: uid, status: 'completed' } },
+      { $group: { _id: '$taskType', count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+    ]);
+
+    // All timesheets
+    const timesheets = await Timesheet.find({ user: uid })
+      .sort({ periodStart: -1 })
+      .limit(20)
+      .select('periodStart periodEnd hoursWorked grossAmount status ratingsCompleted');
+
+    // Recent ratings
+    const recentRatings = await Rating.find({ user: uid, status: 'completed' })
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .select('taskType inputUrl query createdAt evaluation.finalRating evaluation.needsMetRating');
+
+    res.json({
+      success: true,
+      data: {
+        user: {
+          _id: user._id,
+          name: user.name,
+          email: user.email,
+          phone: user.phone,
+          bankAccount: user.bankAccount,
+          hourlyRate: user.hourlyRate,
+          isApproved: user.isApproved,
+          isActive: user.isActive,
+          createdAt: user.createdAt,
+          lastLogin: user.lastLogin,
+        },
+        byPeriod,
+        dailyActivity,
+        taskBreakdown,
+        timesheets,
+        recentRatings,
+      },
+    });
+  } catch (err) { next(err); }
+};
