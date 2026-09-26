@@ -70,6 +70,33 @@ const ratingSchema = new mongoose.Schema({
       enum: ['Lowest', 'Low', 'Medium', 'High', 'Highest', 'N/A'],
     },
     finalComment: String,
+
+    // YouTube-specific extended fields
+    contentFlags: {
+      isHarmful: Boolean,
+      isDeceptive: Boolean,
+      isPorn: Boolean,
+      isHateSpeech: Boolean,
+      isGraphicViolent: Boolean,
+      flagReasons: [String],
+    },
+    contentChecklist: {
+      isPornMainContent: Boolean,
+      isForeignLanguage: Boolean,
+      didntLoad: Boolean,
+    },
+    topics: [String],
+    creatorReputation: String,
+    isSatireOrHumor: String,
+    insensitiveIntolerantDegree: String,
+    publicInterestOutweighsRisk: String,
+    deceptiveDegree: String,
+    deceptiveReasons: [String],
+    harmfulDegree: String,
+    harmfulReasons: [String],
+    isMalicious: Boolean,
+    maliciousReason: String,
+
     // For other task types
     needsMetRating: String,
     youtubePQRating: String,

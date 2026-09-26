@@ -10,6 +10,7 @@ const {
   evaluateSxS,
   getMyRatings,
   getRatingById,
+  evaluateYoutubeImage,
 } = require('../controllers/rating.controller');
 
 router.use(protect);
@@ -21,7 +22,7 @@ router.post('/evaluate/youtube', evaluateYoutube);
 router.post('/evaluate/image', evaluateImage);
 router.post('/evaluate/image-full', evaluateImageFull);
 router.post('/evaluate/sxs', evaluateSxS);
-
+router.post('/evaluate/youtube-image', evaluateYoutubeImage);
 
 
 router.post('/sxs-summary', async (req, res, next) => {

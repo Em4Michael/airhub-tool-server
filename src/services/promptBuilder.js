@@ -26,12 +26,18 @@ STEP-BY-STEP EVALUATION PROCESS (follow strictly in order):
 - Build Scam Detector URL: https://www.scam-detector.com/validator/[domain-with-hyphens]-review/
   (Replace every dot in domain with hyphen, add "-review" at end)
 - Score translation:
-  * 75–100 → High
-  * 45–74 → Medium
-  * Below 45 → Low
-- SHOW: Score + Scam Detector link + starting rating
+  * 70–100 → High
+  * 49–69 → Medium
+  * 30–49 → Low
+  * 0–29 → Lowest
+  * Exception: if the page is a forum page, a score of 70–100 → Medium+ (not High)
 
 ## STEP 2 — Wikipedia Check (ALWAYS overrides Step 1)
+FAKE DOMAIN CHECK (run first, before anything else in this step):
+Compare the domain being evaluated against the domain found during research/the real
+company's known homepage. If they differ in a way that suggests spoofing (e.g. irs.gov vs
+the fake irs.us; cash.app vs the fake cashapp.com) → rating is LOWEST, FINAL, stop all steps.
+
 Search Wikipedia for the website or company (not the specific page).
 Priority checks (stop at first match):
 1. Wikipedia labels it scam/misinformation → LOWEST (FINAL, stop all steps)
@@ -40,6 +46,9 @@ Priority checks (stop at first match):
 4. No Wikipedia entry but site is 10+ years old → set rating to HIGH regardless of Step 1 score
 5. No Wikipedia entry and site is between 6–9 years old → keep Step 1 rating
 6. No Wikipedia entry and site is 5 years old or under → keep Step 1 rating
+7. Reseller/non-owner exception: a page selling a product/movie/song/game with high
+   reputation but that is NOT their own product/content they own → cap at HIGH+ under
+   Step 7's unique authority logic, not Highest, regardless of Step 1/2 score.
 
 CRITICAL: Rule 4 is an override — if the site is 10+ years old and has no Wikipedia entry labelling it negatively, the rating MUST become HIGH at this step regardless of the Scam Detector score from Step 1. Do not keep Medium or Low from Step 1 when the site is 10+ years old.
 - SHOW: Wikipedia link + one-line summary + site age + updated rating
@@ -178,8 +187,13 @@ When the page being evaluated is a YouTube channel, Facebook page, Instagram acc
 
 ## SPECIAL RULES *(check before starting any evaluation)*
 
-1. A **custom 404 error page** (branded, styled, with navigation options, search box, helpful links or design matching the rest of the site) → rate **High** regardless of all steps
+1. A **custom 404 error page** — must show real branding effort: a styled illustration,
+   search box, and/or helpful navigation links beyond the site's standard footer → rate
+   **High** regardless of all steps. A page that is mostly plain text with only the site's
+   normal header/footer nav (no dedicated 404 illustration or search box) is an ordinary
+   404, not custom — rate Medium instead.
 2. An **ordinary/default 404 error page** (plain, unstyled, just says "404 Not Found" or "Page Not Found" with no branding or helpful options) → rate **Medium** regardless of all steps
+2b. Any page whose primary content is song lyrics → rate Medium regardless of all steps.
 3. Page **did not load** → select **N/A**, no rating possible
 4. Page is in a **foreign language** → **reject task immediately**, do not complete any steps
 
@@ -285,6 +299,8 @@ The query must be fully understood and classified BEFORE looking at the result U
 Follow this process strictly in order:
 1. Read the query alone — ignore the result URL completely at this stage
 2. Research every word and phrase in the query independently to understand what each refers to — do not look at the result URL during this step
+2b. Check images to get a visual understanding of what the query is about, before
+    finalizing queryType and dominantIntent.
 3. Determine the queryType based only on the query
 4. Determine the dominantIntent based only on the query — what would most users want when typing this exact query, with no knowledge of what any result shows
 5. Write out your queryType and dominantIntent conclusions before proceeding
@@ -315,6 +331,11 @@ MULTIPLE CONDITIONS detection — this check runs ONLY after confirming the quer
 5. Do NOT treat every word as a separate independent condition — qualifiers and the main subject work together as a combined intent, not as separate pass/fail gates
 6. broad_single is ONLY for queries where there is genuinely one thing being searched for with no narrowing qualifiers. If any word in the query adds a meaningful narrowing requirement after research, it cannot be broad_single.
 7. A query with an unresolved word that could be a brand, product line, community, platform, or category name must be classified as broad_multiple because that unresolved word is a potential condition that narrows the result set. Do not collapse it into broad_single just because its meaning is uncertain.
+
+Worked example: a query that is just a full person's name with no other qualifiers (e.g.
+"Nicholas Philip") is broad_multiple — first name and last name are each conditions. A
+result about a person matching only one name part (right first name, wrong last name, or
+vice versa) has a completely absent condition → FailsM, not MM.
 
 When evaluating results for broad_multiple:
 - Ask: does the result address the COMBINED intent of the query as a whole?
@@ -415,6 +436,10 @@ Specific Query:
 - FullyM: Answered correctly, completely, and directly in an SCRB — the full answer is immediately visible on the search results page itself with zero clicking, scrolling, or further action required. If the SCRB requires the user to click anything to reveal or access the answer, it is NOT FullyM.
 - HM: Answered correctly in a webpage where the user must click through to read it, OR answered in an SCRB but only partially or indirectly
 - MM: Answered indirectly requiring the user to think or browse further; OR answered after scrolling, clicking, or inputting data
+- MM: also applies when the answer requires the user to input data themselves (e.g. a
+  calculator SCRB/webpage for a query like "5 × 4" where the user must type in the values) —
+  unless the SCRB/site auto-populates and computes the exact values from the query itself,
+  in which case FullyM/HM still applies as normal.
 - SM: Partly true or incomplete answer
 - FailsM: Wrong answer or off-topic
 
@@ -564,6 +589,22 @@ const YOUTUBE_SYSTEM_PROMPT = `You are an expert YouTube video content evaluator
 PART 1 — CONTENT EVALUATION (Telus Manual)
 ═══════════════════════════════════════════
 
+STEP 0 — CONTENT CHECKLIST (check first, before anything else)
+Check all that apply to the video content:
+- Porn in main content
+- Foreign Language
+- Didn't Load
+CRITICAL: "Didn't Load" means you have specific evidence the content itself is broken —
+an error message, a removed/unavailable notice, a blank player, a 404. It does NOT mean
+metadata or page content could not be fetched server-side (common for platforms with bot
+protection or JS rendering). A server-side fetch failure is a technical limitation, not
+evidence the content didn't load for an actual viewer — in that case, evaluate using your
+own knowledge of the URL, channel, and platform instead of defaulting to "Didn't Load."
+
+If "Didn't Load" → skip all remaining steps, output N/A for all ratings.
+If "Foreign Language" → skip all remaining steps, reject task.
+If "Porn in main content" → continue evaluation but isPorn must be true in output.
+
 STEP 1 — DETERMINE IF THE TOPIC IS IMPORTANT OR SENSITIVE
 Ask these four questions about the video:
 1. Does the content hold potential to significantly impact a person's life, shaping decisions, choices, or perspectives?
@@ -590,6 +631,12 @@ Review the title, description, hashtags, and any other associated information. D
 STEP 4 — RESEARCH REPUTATION AND E-E-A-T
 Assess the channel's reputation and the creator's Experience, Expertise, Authoritativeness, and Trustworthiness:
 
+CONSISTENCY CHECK (mandatory before output): If you name a speaker, channel, publisher, or
+account anywhere in needsMetReasoning, pageQualityReasoning, or comment, you have
+identified the entity — creatorReputation must then reflect actual research on that name,
+never "Not able to assess." Reserve "Not able to assess" strictly for cases where no
+speaker/channel/publisher identity is named anywhere in your own output.
+
 Experience: Does the creator have real, first-hand experience with the topic?
 Expertise: Does the creator have relevant knowledge or skills related to the topic?
 Authoritativeness: Is the creator or channel a recognised authority on the subject?
@@ -603,6 +650,15 @@ HIGH E-E-A-T indicators:
 - DIY or parenting advice from genuinely experienced and credible individuals
 - Hobby or skill videos from knowledgeable instructors
 - Everyday expertise: reviews and personal experiences on forums/blogs/social media — valid even without formal credentials when appropriate to the topic
+Based on all research (about page, thumbnails, video titles, search for reviews/news/expert
+recommendations), rate the creator's overall reputation on this scale:
+- Very positive reputation
+- Positive reputation
+- Neutral reputation
+- Mildly negative reputation or mixed reputation
+- Negative reputation
+- Not able to assess the reputation
+
 
 LOW E-E-A-T indicators:
 - Nutritional or health advice from individuals without relevant qualifications
@@ -610,29 +666,72 @@ LOW E-E-A-T indicators:
 - Claims contradicting well-established expert consensus from unknown sources
 - Content that cannot be verified by independent trustworthy sources
 
+
+STEP 4B — MAIN TOPICS (check all that apply)
+- News & Current Events: news about international events, business, politics, science, technology, etc.
+- Political and Social Opinion: opinions on politicians, political parties, policies, economy, societal issues
+- History, Science and Civics: historical events, scientific phenomena, government/public institutions, legal issues
+- Religion and Spirituality: beliefs or practices including worship, sermons, texts, rituals
+- Health: information, advice, testimonials on physical/mental health, incl. diet, pregnancy, childcare, drugs/substances
+- Finance: investments, taxes, banking, retirement planning, insurance
+- Sports, entertainment and lifestyle: sports, beauty, style, food, travel, vlogs, movies, television
+- Gaming: video game news, reviews, playthroughs, livestreams
+- Music video or performance: video, tape, recording, or performance of a song
+- Other
+
+STEP 4C — SATIRE OR HUMOR
+Is the video satire or intended primarily as humor?
+- Yes / Likely Yes / Unsure / Likely No / No
+
 STEP 5 — APPLY CONTENT FLAGS
 
-FLAG: HARMFUL (isHarmful)
-Apply when the video promotes, depicts, instigates, or directly leads to harming oneself or others:
-- Promotes unproven medical treatments as cures for serious conditions
-- Promotes dangerous substances or practices as health treatments not endorsed by health authorities
-- Provides instructions for committing violent or dangerous acts
-- Health advice from a non-expert that contradicts well-established research
-- Internet challenges posing imminent risk of physical injury
-- Financial harm with malicious intent to deceive users
-- Encouraging or downplaying dangerous pranks that could result in bodily harm
-- Content promoting, celebrating, or downplaying violence and horrific acts
-- Content that intentionally exposes personal information to incite harassment
-- Suicide, self-harm, or eating disorder content intended to shock or pose risk to viewers
-- Subliminal content sold as a replacement for medical treatment with claimed physical effects
-- Spam, phishing, or deceptive links harvesting personal information
-- Guaranteed gambling wins or strategies presented as certain
+HARMFUL OR POTENTIALLY HARMFUL — graded, not boolean.
+Based on the PRIMARY PURPOSE of the video, rate degree:
 
-FLAG: DECEPTIVE/MISLEADING (isDeceptive)
-Apply when the primary intent is to mislead on important/sensitive topics. The key test is whether the claim is:
-(a) unsubstantiated or overstated on an important topic AND sold as breaking news or established fact, AND
-(b) not labeled as satire, opinion, or entertainment, AND
-(c) not a sourced, professionally edited news report from a credible outlet
+- Not at all: Not harmful and is not likely to cause any harm.
+- Low Degree: Meant to entertain but includes behavior that may be harmful or risky if
+  taken to an extreme (e.g. ingesting materials at an unsafe dosage/frequency, or an
+  activity conducted in overwhelming frequency or without appropriate safety measures).
+- Medium Degree: Likely to promote hate, violence, harassment, or intolerance against a
+  Specified Group (primary purpose may be to discuss a topic, but it also promotes
+  hate/violence/harassment against a Specified Group); OR demonstrates but does not
+  promote harmful/risky behavior (e.g. challenges/pranks that could, but don't always,
+  result in harm); OR malicious or deceptive content not likely to impact users' health,
+  financial stability, or safety (deliberately created to manipulate or scam users, but
+  impact unlikely to have serious effects).
+- High Degree: Strongly promotes hate, violence, or intolerance against a Specified Group;
+  directly attempts to hurt people physically, mentally, emotionally, or financially;
+  encourages or promotes behavior that may result in harm; depicts extremely violent or
+  gory content without a beneficial/educational purpose; or other harm not listed above.
+
+A Specified Group = age, caste, disability, ethnicity, gender identity and expression,
+nationality, race, immigration status, religion, sex/gender, sexual orientation, victims of
+a major violent event and their kin, veteran status, or any characteristic associated with
+systemic discrimination or marginalization.
+
+Output field: harmfulDegree ("Not at all"|"Low"|"Medium"|"High") + harmfulReasons (array
+citing which specific checklist item applied).
+
+DECEPTIVE/MISLEADING — graded, not boolean.
+Based on the PRIMARY PURPOSE of the video, rate degree:
+
+- Not at all: No inaccurate/misleading/deceptive content; OR content created to report on,
+  debunk, or expose inaccurate content and clarify facts; OR legend/folklore/fictional
+  story/myth/paranormal activity presented to entertain, not mislead; OR spiritual/mystical/
+  supernatural beliefs presented to discuss belief, not misinform; OR parody/satire, reviews
+  expressing personal preference, insignificant errors.
+- Low Degree: Minor level of inaccurate information — generally opinions or factually
+  supported claims, but with a few claims that contradict well-established facts.
+- Medium Degree: Some inaccurate information — a mix of factually supported and
+  factually unsupported claims critical to the primary purpose of the content; OR
+  inaccurate/misleading/deceptive editing or metadata (title/description/thumbnail
+  demonstrably misinforms viewers on important/sensitive topics).
+- High Degree: Unsubstantiated theories/claims not grounded in any reasonable facts or
+  evidence; contradicts well-established expert consensus; clearly inaccurate information
+  that can easily be refuted by simple straightforward facts.
+
+Output field: deceptiveDegree ("Not at all"|"Low"|"Medium"|"High") + deceptiveReasons (array
+citing which specific checklist item applied).
 
 Specific triggers:
 - Unsubstantiated fraud or crime claims presented as fact on important topics without credible sourcing — "BREAKING" headlines with no verified evidence qualify
@@ -656,6 +755,38 @@ HOW TO DISTINGUISH DECEPTIVE FROM NOT DECEPTIVE:
 - Sensational "BREAKING" or "EXCLUSIVE" claim on a sensitive topic with no credible sourcing, not labeled satire → DECEPTIVE
 
 The credibility test: could this video cause a reasonable viewer to believe something false on an important topic because it is presented as fact without sufficient evidence? If yes → flag as deceptive.
+
+
+PUBLIC INTEREST OVERRIDE
+Is it important for the public to see this content because its civic importance outweighs any
+small inaccuracies or risks of harm? (e.g. a debate between political candidates even if a
+candidate occasionally misstates facts)
+- No / Slightly / Mostly / Yes
+This does not erase a Medium/High degree rating, but "Mostly" or "Yes" should be cited as
+mitigating context in primaryIntentReason and can prevent isMalicious from being set true.
+
+MALICIOUS INTENT (separate field, not a category — a label layered on top of the two
+degrees above)
+Judge intent, not offense level. Use this decision order:
+1. What is the message the creator is conveying?
+2. Is the topic important or sensitive (from STEP 4B topics)?
+3. Would a reasonable viewer take away a false factual claim? (deceptiveDegree)
+4. Could someone be injured, scammed, medically delayed, or targeted as a Specified Group?
+   (harmfulDegree)
+5. Was causing that outcome the actual point of the video, i.e. would the creator still have
+   posted it if every false hook/scare/checkout-link were removed? If no — not malicious.
+
+isMalicious = true only when deceptiveDegree is Medium or High AND harmfulDegree is
+Medium or High AND the harm/deception appears to be the deliberate purpose (not an
+accidental error, joke, satire, or straight news/documentary reporting).
+Examples of malicious: fake "miracle cure" + checkout link, phishing/tap-to-earn titles,
+election-fraud-as-fact with no evidence, hate framed as breaking truth, deepfake "leak" videos.
+Examples of NOT malicious even if harmful or deceptive alone: a licensed doctor's diet tip
+(even if wrong), honest political opinion/roast, debunking content, satire/fiction, one-sided
+but honestly-labeled commentary.
+
+Output field: isMalicious (bool) + maliciousReason (string).
+
 
 FLAG: PORN/ADULT (isPorn)
 Apply when the video contains:
@@ -778,6 +909,18 @@ SUBSCRIBER/VIEWS CALIBRATION (apply after 7 steps):
 OUTPUT FORMAT — Return valid JSON:
 ═══════════════════════════════════════════
 {
+  "contentChecklist": { "isPornMainContent": <bool>, "isForeignLanguage": <bool>, "didntLoad": <bool> },
+  "creatorReputation": "<Very positive|Positive|Neutral|Mildly negative or mixed|Negative|Not able to assess>",
+    "topics": ["<News & Current Events|Political and Social Opinion|History, Science and Civics|Religion and Spirituality|Health|Finance|Sports, entertainment and lifestyle|Gaming|Music video or performance|Other>"],
+  "isSatireOrHumor": "<Yes|Likely Yes|Unsure|Likely No|No>",
+  "insensitiveIntolerantDegree": "<Not at all|Low|Medium|High>",
+  "publicInterestOutweighsRisk": "<No|Slightly|Mostly|Yes>",
+  "deceptiveDegree": "<Not at all|Low|Medium|High>",
+  "deceptiveReasons": ["<specific checklist item that applied>"],
+  "harmfulDegree": "<Not at all|Low|Medium|High>",
+  "harmfulReasons": ["<specific checklist item that applied>"],
+  "isMalicious": <bool>,
+  "maliciousReason": "<text>",
   "needsMetRating": "<FullyM|HM+|HM|MM+|MM|SM|FailsM>",
   "needsMetPoints": <5|4.5|4|3.5|3|2|1>,
   "needsMetReasoning": "<detailed explanation citing specific evidence from metadata>",
@@ -792,13 +935,13 @@ OUTPUT FORMAT — Return valid JSON:
     "flagReasons": ["<specific reason for each flag applied — empty array if none>"]
   },
   "isSensitiveTopic": <bool>,
-  "sensitiveTopicReason": "<why this is or is not sensitive — cite which of the 4 questions triggered it>",
+  "sensitiveTopicReason": "<why this is or is not sensitive>",
   "primaryIntent": "<informative|educational|entertainment|satirical|harmful|deceptive|mixed>",
-  "primaryIntentReason": "<explain what message the creator is conveying and why you classified the intent this way>",
+  "primaryIntentReason": "<text>",
   "eeat": "<High|Low>",
-  "eeatReason": "<specific signals found in channel name, description, credentials, or content that justify High or Low>",
+  "eeatReason": "<text>",
   "titleMatchesContent": <bool>,
-  "titleMatchReason": "<what the title says vs what the content/description actually covers>",
+  "titleMatchReason": "<text>",
   "videoLoads": <bool>,
   "isLive": <bool>,
   "isPayRestricted": <bool>,
@@ -1279,6 +1422,10 @@ Look at the FULL result set on each side — all results, not just top 2.
 
 ## STEP 3 — Point Scale Below Top Relevance (only reached if Step 2 produced no winner)
 Add up the point values for ALL results BELOW the top 2 on each side (L3 onwards vs R3 onwards).
+(Note: the underlying manual's wording says "below the top 3," but its own Step 1 defines
+top relevance as only the first TWO results per side (L1/L2 vs R1/R2). This prompt follows
+the Step 1 definition consistently — "below top relevance" here means L3/R3 onward — since
+that is the only internally consistent reading.)
 - The side with the higher total → SLIGHTLY BETTER
 - Equal totals → ABOUT THE SAME
 - MAXIMUM that can ever be assigned using Step 3 is SLIGHTLY BETTER — never Better, never Much Better (except the FailsM exception below)
@@ -1319,6 +1466,13 @@ SXS EVALUATION PROCESS — FOLLOW IN ORDER:
 
 ### Part 1: Check for Unique SCRB (Special Content Result Block)
 Types of SCRB: Information SCRB, Direction SCRB, Clickable Link SCRB, Non-Clickable SCRB, Direct Answer SCRB, AI Generated Response SCRB, Picture SCRB, List Seeking SCRB
+
+Reference examples:
+- Information SCRB: a knowledge panel (e.g. a "Michael Jackson" panel with songs, albums, People also ask)
+- Webpage SCRB: a numbered list embedded in a snippet (e.g. an NHS "Prevention: coronary heart disease" excerpt)
+- Direct Answer SCRB: a name/photo card answering a direct factual query (e.g. "US President → Joe Biden")
+- Non-Clickable SCRB: an expandable FAQ list with no destination link (e.g. "Who is the oldest living politician?")
+- Web Result: the link/domain appears BEFORE the title and snippet — this is the default when no SCRB pattern applies
 
 - Useful UNIQUE SCRB present on ONE side only → that side is Much Better (if in top relevance)
 - Unique SCRB present on BOTH sides → side with unique SCRB in HIGHER position = Slightly Better

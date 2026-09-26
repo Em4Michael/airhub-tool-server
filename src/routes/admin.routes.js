@@ -6,7 +6,8 @@ router.use(protect, adminOnly);
 
 router.get('/stats', admin.getDashboardStats);
 router.get('/users', admin.getAllUsers);
-router.get('/ratings', admin.getAllRatings);
+router.get('/usage', admin.getUsageAnalytics);
+router.get('/usage/:userId', admin.getUserUsageDetail);
 router.patch('/users/:id/approve', admin.approveUser);
 router.patch('/users/:id/revoke', admin.revokeUser);
 router.patch('/users/:id/profile', admin.updateUserProfile);

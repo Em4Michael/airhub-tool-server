@@ -297,8 +297,17 @@ async function evaluatePageQuality(url) {
   // YouTube URLs get the YouTube-specific page quality evaluator
   if (isYoutubeUrl(url)) {
     logger.info(`Page Quality: YouTube URL detected, routing through YouTube PQ pipeline`);
-    const metadata = await fetchYoutubeMetadata(url);
-    const pq = await getYoutubePageQualityForUrl(url, metadata);
+const isCommunityPost = isYoutubeCommunityPostUrl(url);
+const metadata = isCommunityPost
+  ? await fetchYoutubeCommunityPostMetadata(url)
+  : await fetchYoutubeMetadata(url);
+const pq = isCommunityPost
+  ? await (async () => {
+      const creatorMeta = await fetchCreatorMetadata(url);
+      const result = await getCreatorPageQuality(url, creatorMeta);
+      return { rating: result.finalRating || 'N/A', steps: result.steps || null };
+    })()
+  : await getYoutubePageQualityForUrl(url, metadata);
 
     // Convert YouTube PQ result to standard page quality format
     return {
@@ -445,6 +454,16 @@ function isYoutubeUrl(url) {
   }
 }
 
+function isYoutubeCommunityPostUrl(url) {
+  try {
+    const u = new URL(url);
+    const hostname = u.hostname.replace('www.', '');
+    return hostname === 'youtube.com' && u.pathname.includes('/post/');
+  } catch {
+    return false;
+  }
+}
+
 function isContentCreatorUrl(url) {
   try {
     const hostname = new URL(url).hostname.replace('www.', '');
@@ -538,6 +557,14 @@ function parseCreatorUrlStructure(url) {
       contentType = segments[0];
       accountName = segments[1] || null;
     }
+    // YouTube community post: /post/postId or /channel/UCxxxx/community
+else if (hostname === 'youtube.com') {
+  contentType = 'community_post';
+  const postMatch = pathname.match(/\/post\/([a-zA-Z0-9_-]+)/);
+  contentId = postMatch ? postMatch[1] : null;
+  const channelMatch = pathname.match(/\/channel\/([a-zA-Z0-9_-]+)/);
+  accountName = channelMatch ? channelMatch[1] : null;
+}
     // Generic fallback
     else {
       accountName = segments[0] || null;
@@ -788,7 +815,41 @@ async function evaluateNeedsMet(query, url) {
     const metadata = await fetchYoutubeMetadata(url);
     const pq = await getYoutubePageQualityForUrl(url, metadata);
 
-    const metadataText = metadata ? `
+const metadataText = isCommunityPost
+  ? (metadata?.fetchBlocked
+      ? `
+COMMUNITY POST: This URL is a YouTube Community Post (text/image post), not a video, at ${url}.
+The post content could not be fetched server-side — this is a technical/JS-rendering limitation,
+NOT evidence the post is unavailable or removed. Do NOT check "Didn't Load" for this reason alone.
+Only mark Didn't Load / FailsM if you have actual specific evidence of removal or breakage (e.g.
+a "post not found" or "this content isn't available" message). Otherwise evaluate using the
+channel identity (from the URL) and general knowledge of that channel to judge relevance.
+Treat "Video Available", subscriber-based page-quality calibration, and any other video-only
+fields as not applicable to this content type.
+`
+      : `
+COMMUNITY POST CONTENT EXTRACTED:
+- Title/Text: ${metadata.title}
+- Description: ${metadata.description}
+- Channel Name: ${metadata.channelName || 'Not available'}
+- Channel ID/Handle: ${metadata.channelId || 'Not available'}
+
+This is a YouTube Community Post (text/image post), not a video. Use this content as the
+primary source of truth about what this post says. Judge relevance to the query based on
+this text.
+
+CRITICAL — creatorReputation: Do NOT default to "Not able to assess" simply because this
+is a post rather than a video. A channel name or handle IS available above — search for it,
+read its about page, look through its typical thumbnails/titles, and check for reviews,
+news coverage, or expert commentary on that channel, exactly as instructed in the
+reputation research step. Only use "Not able to assess" if the channel name itself is
+genuinely unresolvable (i.e. "Not available" above) or your research turns up nothing at
+all — not merely because this content type is a post.
+
+Treat "Video Available", subscriber-based page-quality calibration, and any other
+video-only fields as not applicable to this content type.
+`)
+  : (metadata ? `
 VIDEO METADATA EXTRACTED FROM YOUTUBE:
 - Title: ${metadata.title}
 - Channel: ${metadata.channelName} (${metadata.channelUrl})
@@ -803,8 +864,12 @@ VIDEO METADATA EXTRACTED FROM YOUTUBE:
 
 Use this metadata as the primary source of truth about what this video contains. The title, description, tags and channel name tell you exactly what the video is about. Judge relevance to the query based on this metadata.
 ` : `
-VIDEO METADATA: Could not be fetched. Use your knowledge of this specific YouTube URL to evaluate.
-`;
+VIDEO METADATA: Could not be fetched server-side — this is a technical limitation (bot
+protection, JS rendering, rate limiting), NOT evidence the video didn't load or is unavailable.
+Do NOT check "Didn't Load" for this reason alone. Use your own knowledge of this specific
+YouTube URL, channel, and title (if inferable from the URL) to evaluate. Only mark Didn't Load
+if you have specific evidence of removal or breakage.
+`);
 
     const queryContext = queryAnalysis ? `
 QUERY ALREADY ANALYSED — USE THESE VALUES EXACTLY. Do not change these.
@@ -1006,6 +1071,86 @@ async function fetchYoutubeMetadata(url) {
   }
 }
 
+async function fetchYoutubeOgTags(url) {
+  try {
+    const res = await axios.get(url, {
+      timeout: 10000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      validateStatus: () => true,
+      maxContentLength: 2000000,
+    });
+    const raw = String(res.data || '');
+    if (!raw) return null;
+
+    const ogTitle = raw.match(/property="og:title"[^>]*content="([^"]+)"/i)?.[1] || null;
+    const ogDescription = raw.match(/property="og:description"[^>]*content="([^"]+)"/i)?.[1] || null;
+    // YouTube embeds channel identity in ytInitialData / canonical link even on blocked-looking pages
+    const canonicalMatch = raw.match(/<link rel="canonical" href="([^"]+)"/i)?.[1] || null;
+    const channelUrlMatch = raw.match(/"channelUrlCanonical":"([^"]+)"/i)?.[1]
+      || raw.match(/"externalChannelId":"([^"]+)"/i)?.[1]
+      || raw.match(/href="(\/(?:channel\/[a-zA-Z0-9_-]+|@[a-zA-Z0-9_.-]+))"/i)?.[1]
+      || null;
+    const channelNameMatch = raw.match(/"author":"([^"]+)"/i)?.[1]
+      || ogTitle?.match(/^(.+?)\s*[-–]\s*Community post/i)?.[1]
+      || null;
+
+    return {
+      ogTitle,
+      ogDescription,
+      channelIdentifier: channelUrlMatch,
+      channelName: channelNameMatch,
+      canonical: canonicalMatch,
+      rawLength: raw.length,
+    };
+  } catch (err) {
+    logger.warn(`fetchYoutubeOgTags failed for ${url}: ${err.message}`);
+    return null;
+  }
+}
+
+async function fetchYoutubeCommunityPostMetadata(url) {
+  // Try the lightweight, YouTube-specific tag extraction first — this often succeeds
+  // even when the generic fetchPageHTML bot-check would call it "blocked"
+  const ogData = await fetchYoutubeOgTags(url);
+
+  if (ogData && (ogData.ogTitle || ogData.channelName || ogData.channelIdentifier)) {
+    return {
+      isCommunityPost: true,
+      fetchBlocked: false,
+      title: ogData.ogTitle || 'Not available',
+      description: ogData.ogDescription || 'Not available',
+      channelId: ogData.channelIdentifier || null,
+      channelName: ogData.channelName || 'Not available',
+      rawContent: null,
+    };
+  }
+
+  // Fall back to the generic fetcher as a last resort
+  try {
+    const { html } = await fetchPageHTML(url);
+    if (!html || html.length < 200) {
+      return { isCommunityPost: true, fetchBlocked: true, url };
+    }
+    const ogTitle = html.match(/property="og:title"[^>]*content="([^"]+)"/i)?.[1] || null;
+    const ogDescription = html.match(/property="og:description"[^>]*content="([^"]+)"/i)?.[1] || null;
+    const channelMatch = url.match(/\/channel\/([a-zA-Z0-9_-]+)/);
+    return {
+      isCommunityPost: true,
+      fetchBlocked: false,
+      title: ogTitle || 'Not available',
+      description: ogDescription || 'Not available',
+      channelId: channelMatch ? channelMatch[1] : null,
+      channelName: 'Not available',
+      rawContent: html.slice(0, 3000),
+    };
+  } catch {
+    return { isCommunityPost: true, fetchBlocked: true, url };
+  }
+}
+
 async function getYoutubePageQualityForUrl(url, metadata) {
   if (!metadata) return { rating: 'N/A', steps: null };
 
@@ -1084,15 +1229,56 @@ Return ONLY a valid JSON object:
 async function evaluateYoutube(query, url) {
   logger.info(`Evaluating youtube: query="${query}" url="${url}"`);
 
+  const isCommunityPost = isYoutubeCommunityPostUrl(url); // from last turn's fix
   const [queryAnalysis, metadata] = await Promise.all([
     analyseQueryOnceSafe(query),
-    fetchYoutubeMetadata(url),
+    isCommunityPost ? fetchYoutubeCommunityPostMetadata(url) : fetchYoutubeMetadata(url),
   ]);
+const pq = isCommunityPost
+  ? await (async () => {
+      const creatorMeta = await fetchCreatorMetadata(url);
+      const result = await getCreatorPageQuality(url, creatorMeta);
+      return { rating: result.finalRating || 'N/A', steps: result.steps || null };
+    })()
+  : await getYoutubePageQualityForUrl(url, metadata);
 
-  const pq = await getYoutubePageQualityForUrl(url, metadata);
-  logger.info(`YouTube PQ for ${url}: ${pq.rating}`);
+  const metadataText = isCommunityPost
+    ? (metadata?.fetchBlocked
+        ? `
+COMMUNITY POST: This URL is a YouTube Community Post (text/image post), not a video, at ${url}.
+No channel/creator name or post text could be extracted server-side — this is a technical
+limitation, NOT evidence the post is unavailable or removed. Do NOT check "Didn't Load" for
+this reason alone.
 
-  const metadataText = metadata ? `
+If any part of the URL, prior conversation context, or an attached image reveals the
+channel or creator identity, use your own knowledge of that channel to assess reputation.
+Only set creatorReputation to "Not able to assess" as an absolute last resort when no
+channel or creator identity is available from any source whatsoever.
+`
+        : `
+COMMUNITY POST CONTENT EXTRACTED:
+- Title/Text: ${metadata.title}
+- Description: ${metadata.description}
+- Channel/Creator Name: ${metadata.channelName || 'Not available'}
+- Channel ID/Handle: ${metadata.channelId || 'Not available'}
+
+This is a YouTube Community Post (text/image post), not a video. The account posting this
+could be an individual content creator, a brand, a media outlet, an institution, or any other
+type of channel — do not assume it is a personal creator by default. Use this content as the
+primary source of truth about what this post says. Judge relevance to the query based on
+this text.
+
+CRITICAL — creatorReputation: A channel/creator name is available above — search for it,
+read its about page if accessible, look through its typical thumbnails/titles, and check for
+reviews, news coverage, or expert commentary on that channel, exactly as instructed in the
+reputation research step. Only use "Not able to assess" if the channel name itself is
+genuinely unresolvable (i.e. "Not available" above) or your research turns up nothing at all
+— not merely because this content type is a post.
+
+Treat "Video Available", subscriber-based page-quality calibration, and any other
+video-only fields as not applicable to this content type.
+`)
+    : (metadata ? `
 VIDEO METADATA EXTRACTED FROM YOUTUBE:
 - Title: ${metadata.title}
 - Channel: ${metadata.channelName} (${metadata.channelUrl})
@@ -1107,8 +1293,12 @@ VIDEO METADATA EXTRACTED FROM YOUTUBE:
 
 Use this metadata as the primary source of truth about what this video contains. The title, description, tags and channel name tell you exactly what the video is about. Judge relevance to the query based on this metadata.
 ` : `
-VIDEO METADATA: Could not be fetched. Use your knowledge of this specific URL to evaluate.
-`;
+VIDEO METADATA: Could not be fetched server-side — this is a technical limitation (bot
+protection, JS rendering, rate limiting), NOT evidence the video didn't load or is unavailable.
+Do NOT check "Didn't Load" for this reason alone. Use your own knowledge of this specific
+YouTube URL, channel, and title (if inferable from the URL) to evaluate. Only mark Didn't Load
+if you have specific evidence of removal or breakage.
+`);
 
   const queryContext = queryAnalysis ? `
 QUERY ALREADY ANALYSED — USE THESE VALUES EXACTLY. Do not change these.
@@ -1357,6 +1547,70 @@ Return valid JSON with the standard needs met output format including rating, po
   }
 }
 
+async function evaluateYoutubeImage(query, url, imageBase64, imageType) {
+  logger.info(`Evaluating YouTube image SCRB: query="${query}" url="${url}"`);
+  const queryAnalysis = query ? await analyseQueryOnceSafe(query) : null;
+
+  const response = await openai.chat.completions.create({
+    model: MODEL,
+    messages: [
+      { role: 'system', content: YOUTUBE_SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: `Rate this IMAGE SCRB (Special Content Result Block) captured from a YouTube
+result — this could be a thumbnail, a Community Post image, or a video frame.
+
+Query: "${query || 'not provided'}"
+Associated URL: ${url || 'none provided'}
+
+${queryAnalysis ? `QUERY ALREADY ANALYSED — USE EXACTLY:\nQueryType: ${queryAnalysis.queryType}\nDominantIntent: ${queryAnalysis.dominantIntent}\nNever return "youtube" as queryType.` : `Analyse the query first, classify queryType, never return "youtube" as queryType.`}
+
+Apply the full YouTube framework (content checklist, reputation, topics, satire, insensitive/
+intolerant degree, public interest, deceptive degree, harmful degree, malicious intent,
+Needs Met rating, and page quality) to what is visible in this image and any accompanying
+URL/text context.
+
+CRITICAL — CONSISTENCY BETWEEN FIELDS: If you identify a speaker, channel, publisher, or
+account name anywhere in the image (a name badge, a watermark, a channel handle, a
+publisher logo) or you name that entity anywhere in your own reasoning/comment, you have
+NOT failed to assess reputation — you MUST research that identified name and channel and
+report a real creatorReputation value (Very positive/Positive/Neutral/Mildly negative or
+mixed/Negative), not "Not able to assess." "Not able to assess" is reserved ONLY for cases
+where no speaker, channel, publisher, or account identity is visible or nameable at all —
+never use it after you have already named an entity elsewhere in your output. Before
+finalizing your JSON, check: does my comment or reasoning name anyone or any channel? If
+yes, creatorReputation must reflect research on that name, not "Not able to assess."`,
+          },
+          {
+            type: 'image_url',
+            image_url: { url: `data:${imageType};base64,${imageBase64}` },
+          },
+        ],
+      },
+    ],
+    temperature: 0.2,
+    max_tokens: 2000,
+    response_format: { type: 'json_object' },
+  });
+
+  const content = response.choices[0].message.content;
+  let result;
+  try {
+    result = JSON.parse(content);
+  } catch (e) {
+    throw new Error('AI returned invalid JSON for YouTube image SCRB evaluation.');
+  }
+
+  if (queryAnalysis) {
+    if (!result.queryType || result.queryType === 'youtube') result.queryType = queryAnalysis.queryType;
+    if (!result.dominantIntent) result.dominantIntent = queryAnalysis.dominantIntent;
+  }
+  return result;
+}
+
 async function evaluateImageFull(query, url, queryImageBase64, queryImageMimeType, resultImageBase64, resultImageMimeType) {
   logger.info(`Evaluating image full: query="${query}" url="${url}"`);
   const queryAnalysis = query ? await analyseQueryOnceSafe(query) : null;
@@ -1536,4 +1790,5 @@ module.exports = {
   evaluateSxS,
   callOpenAI,
   fetchYoutubeMetadata,
+  evaluateYoutubeImage,
 };

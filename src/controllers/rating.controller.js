@@ -84,6 +84,17 @@ const evaluate = (taskType, serviceFn, urlField = 'url') => async (req, res, nex
         isGraphicViolent: false,
         flagReasons: [],
       };
+      evaluation.contentChecklist = result.contentChecklist || { isPornMainContent: false, isForeignLanguage: false, didntLoad: false };
+evaluation.topics = result.topics || [];
+evaluation.creatorReputation = result.creatorReputation || 'Not able to assess';
+evaluation.isSatireOrHumor = result.isSatireOrHumor || 'Unsure';
+evaluation.deceptiveDegree = result.deceptiveDegree || 'Not at all';
+evaluation.deceptiveReasons = result.deceptiveReasons || [];
+evaluation.harmfulDegree = result.harmfulDegree || 'Not at all';
+evaluation.harmfulReasons = result.harmfulReasons || [];
+evaluation.publicInterestOutweighsRisk = result.publicInterestOutweighsRisk || 'No';
+evaluation.isMalicious = result.isMalicious || false;
+evaluation.maliciousReason = result.maliciousReason || '';
       // Merge queryType and dominantIntent into raw so the card can display them
       evaluation.rawResponse = JSON.stringify({
         ...result,
@@ -176,6 +187,54 @@ exports.evaluateNeedsMetImage = async (req, res, next) => {
     next(err);
   }
 };
+
+exports.evaluateYoutubeImage = async (req, res, next) => {
+  let ratingDoc;
+  try {
+    const { query, url, imageBase64, imageType } = req.body;
+    if (!imageBase64) {
+      return res.status(400).json({ success: false, message: 'Image is required.' });
+    }
+
+    ratingDoc = await Rating.create({
+      user: req.user._id,
+      taskType: 'youtube',
+      inputUrl: url || 'youtube-image-scrb',
+      query: query || undefined,
+      status: 'pending',
+    });
+
+    const ratingService = require('../services/ratingService');
+    const result = await ratingService.evaluateYoutubeImage(query, url, imageBase64, imageType);
+
+    const evaluation = {
+      needsMetRating: result.needsMetRating,
+      youtubePQRating: result.pageQualityRating,
+      finalComment: result.comment,
+      contentFlags: result.contentFlags,
+      contentChecklist: result.contentChecklist,
+      creatorReputation: result.creatorReputation,
+      topics: result.topics,
+      isSatireOrHumor: result.isSatireOrHumor,
+      insensitiveIntolerantDegree: result.insensitiveIntolerantDegree,
+      publicInterestOutweighsRisk: result.publicInterestOutweighsRisk,
+      deceptiveDegree: result.deceptiveDegree,
+      deceptiveReasons: result.deceptiveReasons,
+      harmfulDegree: result.harmfulDegree,
+      harmfulReasons: result.harmfulReasons,
+      isMalicious: result.isMalicious,
+      maliciousReason: result.maliciousReason,
+      rawResponse: JSON.stringify(result),
+    };
+
+    await Rating.findByIdAndUpdate(ratingDoc._id, { evaluation, status: 'completed' });
+    res.json({ success: true, data: { id: ratingDoc._id, taskType: 'youtube', evaluation } });
+  } catch (err) {
+    if (ratingDoc) await Rating.findByIdAndUpdate(ratingDoc._id, { status: 'error', errorMessage: err.message });
+    next(err);
+  }
+};
+
 exports.evaluateYoutube = evaluate('youtube');
 exports.evaluateImage = evaluate('image');
 
